@@ -1,0 +1,8 @@
+numpy
+pettingzoo
+gymnasium
+torch
+streamlit
+plotly
+pytest
+pyyaml

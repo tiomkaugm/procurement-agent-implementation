@@ -1,0 +1,26 @@
+[project]
+name = "procurement-marl"
+version = "0.1.0"
+description = "Simple MARL procurement implementation (Kelompok 2, Agen Cerdas Enterprise)"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy",
+    "pettingzoo",
+    "gymnasium",
+    "torch",
+    "streamlit",
+    "plotly",
+    "pytest",
+    "pyyaml",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
