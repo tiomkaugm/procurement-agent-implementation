@@ -68,7 +68,9 @@ def play_episode(policy_name: str, scenario_kind: str, seed: int) -> dict:
     else:
         policy = load_policy(policy_name, seed)
     env = ProcurementEnv(scenario)
-    result = run_episode(env, policy, seed=seed, options={"scenario": scenario})
+    # Rencana optimal dinilai satu putaran: jika konflik, episode berhenti di situ (sama seperti oracle).
+    result = run_episode(env, policy, seed=seed, options={"scenario": scenario},
+                         stop_at_first_check=(policy_name == PLAN))
     return {"scenario": scenario, "result": result, "policy": policy_name}
 
 
@@ -161,6 +163,11 @@ def episode_tab() -> None:
     st.subheader(f"Episode: {outcome} setelah {result['rounds']} putaran ({ep['policy']})")
     st.caption(f"Return tim {result['team_return']:.2f}. "
                "Reward diberikan di setiap putaran, jadi episode yang gagal tetap mengumpulkan reward positif per putaran.")
+
+    if ep["policy"] == PLAN and not result["consensus"]:
+        st.info("Rencana optimal satu putaran konflik di putaran 1 "
+                f"({', '.join(result['violations']) or 'pelanggaran batasan'}). "
+                "Oracle menganggap episode berhenti di sini dengan penalti tim, tanpa putaran revisi.")
 
     if "step" not in st.session_state or st.session_state.get("step_for") != id(ep):
         st.session_state.update(step=1, step_for=id(ep))
