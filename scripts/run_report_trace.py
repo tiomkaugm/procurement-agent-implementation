@@ -9,11 +9,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from procurement_marl.agents.rule_based import RuleBasedPolicy
-from procurement_marl.env import ProcurementEnv
+from procurement_marl.env import IRE_LABELS, ProcurementEnv
 from procurement_marl.evaluate import run_episode
+from procurement_marl.scenario import cash_diagnosis
 
 VIOLATION = {"kas_negatif": "kas negatif", "anggaran": "anggaran terlampaui",
-             "unit_mendesak": "unit mendesak terlambat", "kas_minimum": "kas di bawah minimum"}
+             "unit_mendesak": "unit mendesak terlambat", "kas_minimum": "kas di bawah minimum",
+             "kapasitas": "kapasitas vendor kurang",
+             "tanpa_pemasok_layak": "tidak ada pemasok yang memenuhi syarat"}
 REASON = {"kapasitas": "kapasitas kurang", "skor": "gugur skor komposit",
           "lead_time": "lead time melewati tenggat", "dikecualikan": "dikecualikan"}
 
@@ -26,7 +29,7 @@ def show(entry: dict, n_batches: int) -> None:
     agent, tag = entry["agent"], f" (batch {entry.get('batch', 0) + 1})"
     if agent == "IRE":
         parts = [f"{b['qty']} unit bulan {b['month']}" for b in entry["batches"]]
-        print(f"  IRE  : {entry['action']} -> {len(parts)} batch: " + "; ".join(parts))
+        print(f"  IRE  : {IRE_LABELS[entry['action']]} -> {len(parts)} batch: " + "; ".join(parts))
     elif agent == "VMI":
         masked = ", ".join(f"{v} di-mask ({REASON[r]})" for v, r in entry["masked"].items()) or "tidak ada yang di-mask"
         print(f"  VMI{tag if n_batches > 1 else ''}: {masked}. Pilih {entry['vendor']}")
@@ -44,6 +47,11 @@ def main() -> None:
     result = run_episode(env, RuleBasedPolicy(), seed=0)
     sc = env.scenario
     print(f"Skenario laporan: {sc.quantity} unit ({sc.urgent_quantity} mendesak), anggaran {rp(sc.budget)}, tenggat {sc.deadline_days} hari")
+    diag = cash_diagnosis(sc)
+    if diag["infeasible"]:
+        print(f"Diagnosis kas: kas tersedia selama horizon {rp(diag['available'])}, biaya terendah {rp(diag['lower_bound'])} "
+              f"(semua ke vendor {diag['vendor']}, harga lantai, diskon bayar cepat). Kekurangan minimal {rp(diag['shortfall'])}, "
+              "jadi skenario ini pasti berakhir tanpa konsensus.")
     print("Kebijakan: rule-based (meniru laporan)")
     for rnd in range(1, result["rounds"] + 1):
         entries = [e for e in env.log if e["round"] == rnd]

@@ -13,9 +13,9 @@ import streamlit as st
 from procurement_marl.agents.random_agent import RandomPolicy
 from procurement_marl.agents.rule_based import RuleBasedPolicy
 from procurement_marl.costs import cash_balances
-from procurement_marl.env import AGENTS, ProcurementEnv
+from procurement_marl.env import AGENTS, IRE_LABELS, ProcurementEnv
 from procurement_marl.evaluate import run_episode
-from procurement_marl.scenario import composite_scores, eligible_vendors, load_scenario, sample_scenario
+from procurement_marl.scenario import cash_diagnosis, composite_scores, eligible_vendors, load_scenario, sample_scenario
 
 RUNS = ROOT / "runs"
 BLUE, ORANGE = "#2a78d6", "#eb6834"          # categorical slots 1 and 2
@@ -23,7 +23,9 @@ PLAN = "Rencana optimal satu putaran"
 AGENT_NAMES = {"IRE": "IRE (Intake & Routing)", "VMI": "VMI (Vendor Matrix)",
                "DA": "DA (Deal Architect)", "SLM": "SLM (Settlement & Liquidity)"}
 VIOLATION = {"kas_negatif": "kas negatif", "anggaran": "anggaran terlampaui",
-             "unit_mendesak": "unit mendesak terlambat", "kas_minimum": "kas di bawah minimum"}
+             "unit_mendesak": "unit mendesak terlambat", "kas_minimum": "kas di bawah minimum",
+             "kapasitas": "kapasitas vendor kurang",
+             "tanpa_pemasok_layak": "tidak ada pemasok yang memenuhi syarat"}
 REASON = {"kapasitas": "kapasitas kurang", "skor": "gugur skor komposit",
           "lead_time": "lead time melewati tenggat", "dikecualikan": "dikecualikan"}
 
@@ -79,10 +81,15 @@ def describe(e: dict) -> tuple[str, str]:
     """(decision, detail) in Indonesian for one log entry."""
     a = e["agent"]
     if a == "IRE":
-        return e["action"], "; ".join(f"{b['qty']} unit bulan {b['month']}" for b in e["batches"])
+        return IRE_LABELS[e["action"]], "; ".join(f"{b['qty']} unit bulan {b['month']}" for b in e["batches"])
     if a == "VMI":
         masked = ", ".join(f"{v}: {REASON[r]}" for v, r in e["masked"].items()) or "tidak ada yang di-mask"
-        return f"pilih {e['vendor']}", f"batch {e['batch'] + 1}. Di-mask: {masked}. Estimasi {rp(e['estimate'])}"
+        notes = ""
+        if e.get("score_fallback"):
+            notes += " Semua vendor di bawah ambang skor; vendor terbaik dipertahankan sesuai aturan."
+        if e.get("no_vendor_fits"):
+            notes += f" Tidak ada vendor yang memenuhi syarat; VMI dipaksa memakai {e['vendor']} dan putaran akan konflik."
+        return f"pilih {e['vendor']}", f"batch {e['batch'] + 1}. Di-mask: {masked}. Estimasi {rp(e['estimate'])}.{notes}"
     if a == "DA":
         note = ""
         if e.get("accepted") is not None:
@@ -159,6 +166,17 @@ def episode_tab() -> None:
         "Lolos skor": "ya" if v.name in eligible else "gugur"} for v in sc.vendors]),
         hide_index=True, use_container_width=True)
 
+    diag = cash_diagnosis(sc)
+    if diag["infeasible"]:
+        st.warning(
+            f"Diagnosis kas: skenario ini tidak bisa mencapai konsensus, berapa pun rencananya. Kas yang tersedia selama "
+            f"horizon {rp(diag['available'])} (kas awal + arus masuk - kebutuhan lain), sedangkan biaya terendah "
+            f"{rp(diag['lower_bound'])} (seluruh permintaan ke vendor {diag['vendor']} di harga lantai dengan diskon bayar cepat). "
+            f"Kekurangan minimal {rp(diag['shortfall'])}. Perlu tambahan dana, arus kas masuk, atau permintaan yang lebih kecil.")
+    else:
+        st.caption("Diagnosis kas: batas bawah biaya masih tercakup kas horizon. Ini belum membuktikan skenario layak; "
+                   "kegagalan di sini berarti solusi belum ditemukan, bukan pasti tidak mungkin.")
+
     outcome = "KONSENSUS" if result["consensus"] else "TANPA KONSENSUS"
     st.subheader(f"Episode: {outcome} setelah {result['rounds']} putaran ({ep['policy']})")
     st.caption(f"Return tim {result['team_return']:.2f}. "
@@ -166,7 +184,7 @@ def episode_tab() -> None:
 
     if ep["policy"] == PLAN and not result["consensus"]:
         st.info("Rencana optimal satu putaran konflik di putaran 1 "
-                f"({', '.join(result['violations']) or 'pelanggaran batasan'}). "
+                f"({', '.join(VIOLATION[v] for v in result['violations']) or 'pelanggaran batasan'}). "
                 "Oracle menganggap episode berhenti di sini dengan penalti tim, tanpa putaran revisi.")
 
     if "step" not in st.session_state or st.session_state.get("step_for") != id(ep):
@@ -251,7 +269,7 @@ def comparison_tab() -> None:
     st.warning("Rasio terhadap rencana optimal satu putaran boleh > 1 dan tidak berarti kebijakan lebih baik. "
                "Rencana optimal menilai kegagalan berhenti di satu putaran, sedangkan kebijakan multi-putaran "
                "mengumpulkan reward per putaran yang menutup sebagian penalti tim. Lihat tingkat konsensus: "
-               "rencana optimal satu putaran 86,2% dibanding CTDE 80,4%.")
+               "rencana optimal satu putaran 84,6% dibanding IQL 81,0% dan CTDE 78,0%.")
     sens = RUNS / "sensitivity" / "summary.csv"
     if sens.exists():
         st.subheader("Sensitivitas terhadap peluang penerimaan vendor")

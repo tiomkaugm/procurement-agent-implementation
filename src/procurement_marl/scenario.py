@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from .costs import batch_total
+
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
 
@@ -98,6 +100,29 @@ def eligible_vendors(scenario: Scenario) -> list[str]:
     scores = composite_scores(scenario)
     keep = [name for name, s in scores.items() if s >= scenario.min_composite_score]
     return keep or [max(scores, key=scores.get)]
+
+
+def score_fallback(scenario: Scenario) -> bool:
+    """True if no vendor reaches the score threshold, so `eligible_vendors` keeps the best one anyway."""
+    return all(s < scenario.min_composite_score for s in composite_scores(scenario).values())
+
+
+def cash_diagnosis(scenario: Scenario) -> dict[str, int | str | bool]:
+    """Cash-only lower bound: can the request be paid for at all within the cash horizon?
+
+    The cheapest possible bill is the whole request at the best vendor's floor price with the fast-payment
+    discount (capacity and lead time ignored, so it is a true lower bound). Every payment falls inside the
+    horizon, so if cash over the whole horizon is below that bill, the last month must end negative.
+    `shortfall > 0` proves the scenario cannot reach consensus; `shortfall <= 0` proves nothing.
+    """
+    def bill(v: Vendor) -> int:
+        return batch_total(scenario.quantity, v.floor_price, v.transport, v.risk, v.discount_pct)
+
+    cheapest = min(scenario.vendors, key=bill)
+    available = scenario.initial_cash + sum(scenario.inflows) - sum(scenario.other_needs)
+    lower_bound = bill(cheapest)
+    return {"vendor": cheapest.name, "lower_bound": lower_bound, "available": available,
+            "shortfall": max(0, lower_bound - available), "infeasible": lower_bound > available}
 
 
 def sample_scenario(seed: int, config_path: str | Path = CONFIG_DIR / "env_default.yaml") -> Scenario:

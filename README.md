@@ -28,7 +28,7 @@ Semua perintah di bawah dijalankan dari root repositori (folder yang berisi `pyp
 
 | Perintah | Fungsi |
 |---|---|
-| `pytest` | Semua test (54 test, sekitar 30 detik) |
+| `pytest` | Semua test (62 test, sekitar 30 detik) |
 | `python scripts/run_report_trace.py` | Cetak jejak rule-based pada skenario laporan, dalam bahasa Indonesia |
 | `python scripts/check_scenarios.py 500` | Cek generator skenario acak: persen layak, rencana naif gagal, konsensus rule-based dan random |
 | `python scripts/train.py --algo iql` | Latih IQL (50.000 episode, sekitar 2 menit) ke `runs/iql/` |
@@ -49,21 +49,22 @@ Perbandingan kebijakan pada 500 skenario acak (seed 0-499, kebijakan greedy):
 
 | Kebijakan | Return tim | Konsensus | Pel. anggaran | Pel. kas | Unit mendesak | Putaran |
 |---|---|---|---|---|---|---|
-| Random | -0,09 | 77,0% | 17,8% | 3,2% | 90,2% | 2,87 |
-| Rule-based | -1,08 | 64,0% | 14,2% | 9,8% | 84,0% | 2,88 |
-| IQL | 1,19 | 79,6% | 18,6% | 2,4% | 99,4% | 2,17 |
-| CTDE actor-critic | 1,71 | 80,4% | 19,2% | 0,4% | 100,0% | 2,04 |
-| Rencana optimal satu putaran | 0,47 | 86,2% | 11,8% | 0,6% | 98,2% | 1,71 |
+| Random | -0,18 | 78,2% | 7,8% | 1,8% | 85,2% | 2,76 |
+| Rule-based | 0,11 | 76,2% | 6,6% | 7,8% | 89,2% | 2,45 |
+| IQL | 1,06 | 81,0% | 8,2% | 1,0% | 89,2% | 2,48 |
+| CTDE actor-critic | 1,93 | 78,0% | 11,6% | 1,0% | 89,2% | 2,92 |
+| Rencana optimal satu putaran | 0,44 | 84,6% | 5,0% | 0,4% | 89,2% | 1,79 |
 
-Tabel lengkap (biaya dan rasio) ada di `runs/comparison.md`. Untuk seed lain, return IQL 1,32 dan 1,15, CTDE 1,80 dan 1,74.
+Tabel lengkap (biaya dan rasio) ada di `runs/comparison.md`. Angka ini dari satu seed training (seed 0) setelah perbaikan validasi pemasok (kapasitas, skor sebagai syarat wajib) dan penyetelan ulang rentang skenario. Hasil sebelum perbaikan disimpan di `runs_before_capacity_fix/` dan `runs_before_score_filter_fix/`. Unit mendesak terpenuhi 89,2% untuk rencana optimal, IQL, dan CTDE karena sekitar 11% skenario acak memang tidak punya pemasok yang bisa mengirim unit mendesak tepat waktu.
 
 Cara membaca hasil:
 
-- CTDE terbaik di antara kebijakan hasil latihan pada return, pelanggaran kas, dan pemenuhan unit mendesak. Tingkat konsensusnya hanya sedikit di atas IQL dan random.
-- **Rasio terhadap rencana optimal satu putaran boleh > 1 dan bukan bukti kebijakan lebih baik.** Reward per agen diberikan di setiap putaran, sehingga episode gagal (6 putaran) mengumpulkan reward positif yang menutup sebagian penalti tim. Return episode gagal: CTDE -0,62, IQL -2,52, random -6,84. Rencana optimal menilai kegagalan berhenti di satu putaran. Tingkat konsensus lebih jujur: rencana optimal 86,2% dibanding CTDE 80,4%. Ini batasan desain reward yang diketahui.
+- **Tiga seed training** (0, 1, 2, dievaluasi pada 500 skenario yang sama; seed 1 dan 2 di `runs/seeds/`): return IQL 1,06 / 1,39 / 1,01 (rata-rata 1,15) dan CTDE 1,93 / 2,23 / 0,81 (rata-rata 1,66). Konsensus IQL 81,0 / 81,2 / 77,8% (rata-rata 80,0%) dan CTDE 78,0 / 78,0 / 82,2% (rata-rata 79,4%). Rentang antar seed (sekitar 1,4 poin return CTDE, 4 poin konsensus) sama besar dengan selisih antar kebijakan, jadi perbedaan IQL dan CTDE tidak bisa dianggap nyata. Yang konsisten hanya: keduanya di atas rule-based pada return, dan di bawah rencana optimal satu putaran (84,6%) pada konsensus.
+- Kebijakan hasil latihan hanya sedikit lebih baik dari baseline pada konsensus: IQL 81,0%, CTDE 78,0%, random 78,2%, rule-based 76,2%. CTDE punya return tertinggi (1,93) tetapi konsensusnya tidak lebih tinggi dari random dan pelanggaran anggarannya paling banyak (11,6%). CTDE unggul pada pelanggaran kas (1,0% dibanding 7,8% rule-based). Setelah validasi diperketat, tidak ada bukti jelas bahwa CTDE lebih baik dari IQL.
+- **Rasio terhadap rencana optimal satu putaran boleh > 1 dan bukan bukti kebijakan lebih baik.** Reward per agen diberikan di setiap putaran, sehingga return episode gagal (6 putaran) tidak sebanding dengan rencana optimal yang berhenti di putaran 1. Rata-rata return episode yang gagal: CTDE -4,95, IQL -6,64, random -8,75, rule-based -7,03. Tingkat konsensus lebih jujur: rencana optimal 84,6% dibanding IQL 81,0% dan CTDE 78,0%. Ini batasan desain reward yang diketahui.
 - Rencana optimal satu putaran bukan batas atas. Ia hanya merencanakan satu putaran, sehingga kebijakan multi-putaran bisa melampauinya.
-- Sensitivitas terhadap peluang penerimaan vendor (0,3 / 0,5 / 0,7 / 0,9): urutan kebijakan tidak berubah. CTDE tidak pernah memilih penawaran_balik, dan pemakaian penawaran_balik serta revisi_termin tidak naik seiring peluang. Kesimpulan tidak bergantung pada asumsi peluang, tetapi kedua aksi negosiasi hampir tidak memberi sinyal belajar (keuntungan penawaran balik hanya sekitar 0,6% harga).
-- Hiperparameter tidak dituning, dan tiap konfigurasi hanya dilatih dengan satu sampai tiga seed.
+- Sensitivitas terhadap peluang penerimaan vendor (0,3 / 0,5 / 0,7 / 0,9, `runs/sensitivity/summary.csv`): return CTDE 0,84 / 2,14 / 2,11 / 2,36 dan IQL 1,03 / 1,42 / 0,94 / 1,54. CTDE tidak selalu di atas IQL (pada 0,3 dan 0,7 justru di bawah atau sejajar), jadi urutan kedua kebijakan tidak stabil terhadap asumsi peluang. Konsensus semua kebijakan berada di 78% sampai 80,4%, hampir sama dengan random (78,4% sampai 78,6%). CTDE hampir tidak memakai penawaran_balik (0% sampai 0,4%) dan memilih revisi_termin 73% sampai 100%; IQL memakai penawaran_balik 34% sampai 56% tanpa pola terhadap peluang. Kesimpulan: hasil latihan lemah dan peka terhadap seed dan asumsi; kedua aksi negosiasi hampir tidak memberi sinyal belajar (keuntungan penawaran balik hanya sekitar 0,6% harga).
+- Hiperparameter tidak dituning. Perbandingan utama memakai tiga seed training; sensitivitas hanya satu seed.
 
 ## Pemetaan laporan ke kode
 
@@ -131,7 +132,7 @@ flowchart TD
     L --> B
 ```
 
-Diagram menggambarkan alur implementasi saat ini. Status konsensus mengikuti pemeriksaan ENV yang tersedia; celah validasi pemasok dijelaskan pada bagian bug di bawah. Batas default adalah enam putaran, dengan pengaman tambahan 300 langkah.
+Diagram menggambarkan alur implementasi saat ini. Status konsensus mengikuti pemeriksaan ENV (biaya, kas, unit mendesak, dan kelayakan pemasok). Batas default adalah enam putaran, dengan pengaman tambahan 300 langkah.
 
 ### 1. IRE: menyusun rencana pembelian
 
@@ -173,7 +174,7 @@ Jika revisi termin ditolak, pembayaran beralih ke jatuh tempo. Biaya transportas
 
 ### 5. ENV: memeriksa hasil dan mengatur putaran berikutnya
 
-Setelah seluruh batch diproses, ENV memeriksa kas negatif, kelebihan anggaran, pemenuhan unit mendesak, dan kas minimum jika diaktifkan sebagai batasan wajib. Pada fixture laporan, kas minimum hanya menghasilkan peringatan. ENV juga menghitung reward dan mencatat hasil ke log.
+Setelah seluruh batch diproses, ENV memeriksa kas negatif, kelebihan anggaran, pemenuhan unit mendesak, kapasitas pemasok terpilih (termasuk kasus tidak ada pemasok yang cocok), dan kas minimum jika diaktifkan sebagai batasan wajib. Pada fixture laporan, kas minimum hanya menghasilkan peringatan. ENV juga menghitung reward dan mencatat hasil ke log.
 
 Jika pemeriksaan lolos, episode berakhir dengan konsensus. Jika gagal dan batas putaran belum tercapai, ENV memasukkan informasi konflik ke observasi dan memulai rencana baru. Batch serta komitmen pembayaran dihitung ulang untuk rencana tersebut; pembayaran dari percobaan sebelumnya tidak dijumlahkan sebagai transaksi aktual. Harga terakhir yang disepakati dan relasi pemasok tetap tersimpan selama episode. Implementasi: [`_end_round` dan `_start_round`](src/procurement_marl/env.py).
 

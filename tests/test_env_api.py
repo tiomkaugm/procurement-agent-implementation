@@ -179,3 +179,95 @@ def test_truncation_safety_net():
     env.max_steps = 3
     result = run_episode(env, RandomPolicy(0), seed=0)
     assert result["truncated"] and result["steps"] == 3
+
+
+def test_insufficient_capacity_is_not_consensus():
+    """When no vendor can fit a batch the VMI mask is relaxed, so the final check must catch it."""
+    import dataclasses
+    from procurement_marl.agents.rule_based import RuleBasedPolicy
+    sc = load_scenario()
+    sc = dataclasses.replace(sc, vendors=[dataclasses.replace(v, capacity=100) for v in sc.vendors],
+                             initial_cash=10**10)
+    result = run_episode(ProcurementEnv(sc), RuleBasedPolicy(), seed=0, options={"scenario": sc})
+    assert not result["consensus"]
+    assert "kapasitas" in result["violations"]
+
+
+def _with_vendors(**changes):
+    import dataclasses
+    sc = load_scenario()
+    vendors = tuple(dataclasses.replace(v, **changes) for v in sc.vendors)
+    return dataclasses.replace(sc, vendors=vendors, initial_cash=10**10)
+
+
+def test_no_vendor_fits_is_explicit():
+    """Nobody fits the batch: VMI may take exactly one vendor, and the round ends in conflict with a clear reason."""
+    from procurement_marl.agents.rule_based import RuleBasedPolicy
+    sc = _with_vendors(capacity=100)
+    env = ProcurementEnv(sc)
+    result = run_episode(env, RuleBasedPolicy(), seed=0, options={"scenario": sc})
+    vmi = next(e for e in env.log if e["agent"] == "VMI")
+    assert vmi["no_vendor_fits"] and sum(vmi["mask"]) == 0        # logged mask is the real one, not the relaxed one
+    assert not result["consensus"]
+    assert {"tanpa_pemasok_layak", "kapasitas"} <= set(result["violations"])
+
+
+def test_no_vendor_fits_random_policy_terminates():
+    sc = _with_vendors(capacity=100)
+    env = ProcurementEnv(sc)
+    for seed in range(50):
+        result = run_episode(env, RandomPolicy(seed), seed=seed, options={"scenario": sc})
+        assert not result["truncated"] and not result["consensus"]
+
+
+def test_all_vendors_below_score_threshold_keeps_best_and_logs_it():
+    import dataclasses
+    from procurement_marl.agents.rule_based import RuleBasedPolicy
+    from procurement_marl.scenario import eligible_vendors, score_fallback
+    sc = dataclasses.replace(load_scenario(), min_composite_score=99.0)
+    assert score_fallback(sc) and eligible_vendors(sc) == ["B"]
+    env = ProcurementEnv(sc)
+    result = run_episode(env, RuleBasedPolicy(), seed=0, options={"scenario": sc})
+    assert not result["truncated"]
+    assert all(e["score_fallback"] for e in env.log if e["agent"] == "VMI")
+    assert not score_fallback(load_scenario())
+
+
+def test_score_is_a_hard_filter_even_when_the_only_eligible_vendor_is_too_small():
+    """The one vendor above the threshold has too little capacity: a lower-scored vendor must not be used instead."""
+    import dataclasses
+    sc = load_scenario()
+    vendors = tuple(dataclasses.replace(v, capacity=100) if v.name == "B" else v for v in sc.vendors)
+    sc = dataclasses.replace(sc, vendors=vendors, initial_cash=10**10)     # only B passes the score, B is too small
+    env = ProcurementEnv(sc)
+    env.reset(seed=0, options={"scenario": sc})
+    env.step(0)                                                              # IRE: teruskan
+    # nobody fits, so only the largest-capacity vendor (A) is allowed; C (score below threshold) stays blocked
+    assert list(map(int, env.observe("VMI")["action_mask"])) == [1, 0, 0]
+
+
+def test_cash_diagnosis_fixture_numbers():
+    from procurement_marl.scenario import cash_diagnosis
+    d = cash_diagnosis(load_scenario())
+    assert (d["vendor"], d["lower_bound"], d["available"], d["shortfall"]) == ("B", 99_220_000, 80_000_000, 19_220_000)
+    assert d["infeasible"]
+
+
+def test_cash_diagnosis_is_a_sound_bound():
+    """If the cash bound says infeasible, no deterministic plan may reach consensus."""
+    import dataclasses
+    from procurement_marl.scenario import cash_diagnosis
+    hits = 0
+    for seed in range(200):
+        base = sample_scenario(seed)
+        sc = dataclasses.replace(base, initial_cash=base.initial_cash - 90_000_000)    # make the bound trigger often
+        if cash_diagnosis(sc)["infeasible"]:
+            hits += 1
+            assert not is_feasible(sc), seed
+    assert hits > 0
+
+
+def test_ire_display_labels_do_not_promise_a_clarification():
+    from procurement_marl.env import IRE_ACTIONS, IRE_LABELS
+    assert set(IRE_LABELS) == set(IRE_ACTIONS)
+    assert "klarifikasi" not in IRE_LABELS["minta_klarifikasi"]

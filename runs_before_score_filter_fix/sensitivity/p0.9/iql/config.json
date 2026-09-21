@@ -1,0 +1,17 @@
+{
+  "algo": "iql",
+  "episodes": 50000,
+  "seed": 0,
+  "p_override": 0.9,
+  "alpha": 0.1,
+  "gamma": 0.99,
+  "eps_start": 1.0,
+  "eps_end": 0.05,
+  "decay_share": 0.7,
+  "states": {
+    "IRE": 525,
+    "VMI": 162,
+    "DA": 118,
+    "SLM": 64
+  }
+}

@@ -10,7 +10,7 @@ Itulah penyebab putaran 3–6 pada ekspor fixture berulang dengan biaya Rp100.39
 
 ### 1. Prioritas tinggi: konsensus dapat lolos meskipun kapasitas pemasok tidak cukup
 
-- **Status:** bug validasi terkonfirmasi melalui pengujian tambahan.
+- **Status:** bug validasi terkonfirmasi melalui pengujian tambahan. **Sudah diperbaiki:** (a) `_end_round` menambah pelanggaran `kapasitas` bila ukuran batch melebihi kapasitas vendor terpilih; (b) bila tidak ada vendor yang cocok, mask VMI tidak lagi dibuka penuh: hanya vendor berkapasitas terbesar yang boleh dipilih, log VMI menandai `no_vendor_fits`, dan putaran berakhir konflik dengan alasan `tanpa_pemasok_layak`; (c) skor komposit kini benar-benar syarat wajib (sebelumnya mask yang dibuka penuh bisa meloloskan vendor yang gugur skor); (d) fallback `eligible_vendors` dipertahankan sesuai spesifikasi dan dicatat di log VMI (`score_fallback`). Test: `test_insufficient_capacity_is_not_consensus`, `test_no_vendor_fits_is_explicit`, `test_no_vendor_fits_random_policy_terminates`, `test_all_vendors_below_score_threshold_keeps_best_and_logs_it`, `test_score_is_a_hard_filter_even_when_the_only_eligible_vendor_is_too_small`.
 - **Penyebab:** ketika seluruh pemasok tersaring, `_mask("VMI")` membuka kembali semua pilihan dengan `[True] * 3`. Pemeriksaan akhir `_end_round` tidak memeriksa ulang kapasitas dan kelayakan skor pemasok.
 - **Reproduksi:** gunakan fixture dengan kapasitas semua pemasok 100 unit dan kas awal Rp250 juta. Pilih `teruskan`, pemasok B, `penawaran_awal`, lalu `bayar_cepat`. Pesanan 1.000 unit dinyatakan konsensus tanpa pelanggaran meskipun kapasitas B hanya 100 unit.
 - **Rencana:** tangani kondisi tanpa pemasok layak secara eksplisit; jangan membuka semua pilihan secara otomatis. Validasi batasan pemasok kembali sebelum menyatakan konsensus. Tinjau juga fallback `eligible_vendors` yang mempertahankan satu pemasok ketika semua skor di bawah ambang, agar aturan wajib dan pengecualiannya konsisten.
@@ -24,13 +24,13 @@ Itulah penyebab putaran 3–6 pada ekspor fixture berulang dengan biaya Rp100.39
 
 ### 3. Prioritas menengah: label klarifikasi tidak sesuai proses yang dilakukan
 
-- **Status:** masalah penamaan dan penyederhanaan model. `minta_klarifikasi` saat ini hanya membagi kebutuhan mendesak dan nonmendesak.
+- **Status:** masalah penamaan dan penyederhanaan model. `minta_klarifikasi` saat ini hanya membagi kebutuhan mendesak dan nonmendesak. **Sudah diperbaiki di tampilan:** dashboard, ekspor CSV, dan `run_report_trace.py` memakai label "bagi pesanan (mendesak bulan ini, sisanya bulan depan)" (`IRE_LABELS` di `env.py`). Nama aksi internal tetap `minta_klarifikasi` agar checkpoint dan test jejak laporan tidak berubah.
 - **Rencana:** perjelas label tampilan sebagai pembagian atau revisi kebutuhan. Jika klarifikasi sungguhan diperlukan, tambahkan keadaan menunggu informasi dan jawaban yang benar-benar memengaruhi rencana. Pertahankan pemetaan aksi dan kompatibilitas checkpoint saat mengubah label.
 - **Kriteria selesai:** dashboard dan ekspor menjelaskan tindakan yang benar-benar terjadi; tidak mengesankan ada percakapan klarifikasi yang belum diimplementasikan.
 
 ### 4. Prioritas menengah: ketidaklayakan kas belum dijelaskan sejak awal
 
-- **Status:** keterbatasan diagnosis skenario, bukan kesalahan aritmetika biaya.
+- **Status:** keterbatasan diagnosis skenario, bukan kesalahan aritmetika biaya. **Sudah diperbaiki:** `cash_diagnosis` di `scenario.py` menghitung batas bawah biaya dan kekurangan kas (fixture: kas Rp80.000.000, biaya terendah Rp99.220.000 di B, kurang Rp19.220.000). Dashboard dan `run_report_trace.py` menampilkannya; bila batas kas tidak terlampaui tampil pesan "solusi belum ditemukan, bukan pasti tidak mungkin". Test: `test_cash_diagnosis_fixture_numbers`, `test_cash_diagnosis_is_a_sound_bound`.
 - **Bukti fixture:** kas awal Rp150 juta dikurangi kebutuhan lain Rp70 juta menyisakan Rp80 juta, tanpa pemasukan selama empat bulan. Biaya terendah secara optimistis untuk 1.000 unit adalah Rp99.220.000, memakai harga lantai B dan diskon cepat. Seluruh opsi pembayaran dalam model jatuh dalam horizon empat bulan, sehingga masih ada kekurangan sedikitnya Rp19.220.000. Memasukkan C atau menggeser pembayaran saja tidak mengatasi kekurangan total tersebut.
 - **Rencana:** tambahkan pemeriksaan awal yang dapat membuktikan ketidaklayakan dari batas bawah biaya dan kas, beserta penjelasan kebutuhan perubahan pendanaan, jumlah, atau batasan. Untuk kasus yang belum dapat dibuktikan, gunakan status `belum ditemukan solusi`, bukan langsung `tidak mungkin`.
 - **Kriteria selesai:** fixture menampilkan alasan kekurangan kas dengan angka yang dapat ditelusuri. Simulasi reproduksi tetap dapat dijalankan untuk kebutuhan demonstrasi.

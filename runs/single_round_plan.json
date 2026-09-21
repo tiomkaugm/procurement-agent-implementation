@@ -1,1 +1,1 @@
-{"n": 500, "row": {"team_return": 0.4706184742468788, "consensus": 0.862, "budget_violation": 0.118, "cash_violation": 0.006, "urgent_met": 0.982, "avg_cost": 100105535.152, "rounds": 1.712, "counter_offer_rate": 0.0, "term_revision_rate": 0.0}}
+{"n": 500, "row": {"team_return": 0.43692968353735573, "consensus": 0.846, "budget_violation": 0.05, "cash_violation": 0.004, "urgent_met": 0.892, "avg_cost": 99633941.842, "rounds": 1.788, "counter_offer_rate": 0.0, "term_revision_rate": 0.0}}

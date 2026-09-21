@@ -17,11 +17,16 @@ from pettingzoo import AECEnv
 
 from .costs import PAY_DUE, PAY_FAST, PAY_SPLIT, cash_balances, discount_amount, goods_value, payment_schedule
 from .rewards import da_reward, ire_reward, slm_reward, team_reward, vmi_reward
-from .scenario import CONFIG_DIR, Scenario, composite_scores, eligible_vendors, load_scenario, sample_scenario
+from .scenario import (CONFIG_DIR, Scenario, composite_scores, eligible_vendors, load_scenario, sample_scenario,
+                       score_fallback)
 
 AGENTS = ["IRE", "VMI", "DA", "SLM"]
 VENDORS = ["A", "B", "C"]
 IRE_ACTIONS = ["teruskan", "minta_klarifikasi", "tunda"]
+# Display labels (dashboard, trace). The internal action name stays so tests and checkpoints keep working.
+IRE_LABELS = {"teruskan": "teruskan (satu batch bulan ini)",
+              "minta_klarifikasi": "bagi pesanan (mendesak bulan ini, sisanya bulan depan)",
+              "tunda": "tunda (seluruh permintaan ke bulan depan)"}
 DA_ACTIONS = ["penawaran_awal", "penawaran_balik", "minta_alternatif"]
 SLM_ACTIONS = [PAY_FAST, PAY_DUE, PAY_SPLIT]
 CONFLICT_KEYS = ["any", "budget", "cash", "urgent"]
@@ -152,6 +157,10 @@ class ProcurementEnv(AECEnv):
                 reasons[v.name] = "dikecualikan"
         return [v.name not in reasons for v in sc.vendors], reasons
 
+    def _fallback_vendor(self) -> str:
+        """Vendor VMI is forced to take when no vendor fits a batch: the largest capacity (ties: first listed)."""
+        return max(self.scenario.vendors, key=lambda v: v.capacity).name
+
     def _estimates(self, qty: int) -> dict[str, int]:
         """VMI cost estimate per vendor: last agreed price with that vendor, else list price."""
         return {
@@ -194,7 +203,7 @@ class ProcurementEnv(AECEnv):
         def new(qty: int, month: int, urgent: int) -> dict:
             return {"qty": qty, "month": month, "urgent": urgent, "vendor": None, "price": None,
                     "excluded": set(), "alt_used": False, "counter_used": False, "da_failed": False, "cheapest": None,
-                    "mode": None, "discount": 0, "schedule": {}}
+                    "mode": None, "discount": 0, "schedule": {}, "no_vendor": False}
 
         if a == 0:
             self.batches = [new(sc.quantity, 1, sc.urgent_quantity)]
@@ -220,8 +229,10 @@ class ProcurementEnv(AECEnv):
         mask, reasons = self._vendor_mask(b)
         est = self._estimates(b["qty"])
         b["vendor"] = v.name
+        b["no_vendor"] = not any(mask)
         self._log(agent="VMI", batch=self.batch_idx, action=f"vendor_{v.name}", vendor=v.name,
-                  mask=mask, masked=reasons, estimates=est, estimate=est[v.name])
+                  mask=mask, masked=reasons, estimates=est, estimate=est[v.name],
+                  no_vendor_fits=b["no_vendor"], score_fallback=score_fallback(self.scenario))
         self.stage, self.agent_selection = "DA", "DA"
 
     def _step_da(self, a: int) -> None:
@@ -304,6 +315,10 @@ class ProcurementEnv(AECEnv):
             violations.append("anggaran")
         if not urgent_met:
             violations.append("unit_mendesak")
+        if any(b["no_vendor"] for b in self.batches):
+            violations.append("tanpa_pemasok_layak")   # VMI was forced to take a vendor that does not fit
+        if any(b["qty"] > sc.vendor(b["vendor"]).capacity for b in self.batches):
+            violations.append("kapasitas")     # VMI mask is relaxed when nobody fits, so check here
         if sc.enforce_min_cash and below_min:
             violations.append("kas_minimum")
         warnings = ["kas_di_bawah_minimum"] if below_min and not sc.enforce_min_cash else []
@@ -355,7 +370,10 @@ class ProcurementEnv(AECEnv):
             return [True, sc.urgent_quantity < sc.quantity, True]
         if agent == "VMI":
             mask, _ = self._vendor_mask(b)
-            return mask if any(mask) else [True] * 3     # nobody fits: relax all constraints
+            if any(mask):
+                return mask
+            fallback = self._fallback_vendor()          # nobody fits: allow one vendor only, the round ends in conflict
+            return [v.name == fallback for v in sc.vendors]
         if agent == "DA":
             others, _ = self._vendor_mask(b, extra_excluded=(b["vendor"],))
             return [True, not b["counter_used"], (not b["alt_used"]) and any(others)]

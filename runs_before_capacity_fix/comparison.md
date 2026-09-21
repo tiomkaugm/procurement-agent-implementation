@@ -1,0 +1,7 @@
+| Kebijakan | Return tim | Konsensus | Pelanggaran anggaran | Pelanggaran kas | Unit mendesak terpenuhi | Biaya rata-rata (juta Rp) | Rata-rata putaran | Rasio thd rencana optimal 1 putaran |
+|---|---|---|---|---|---|---|---|---|
+| Random | -0.09 | 77.0% | 17.8% | 3.2% | 90.2% | 101.0 | 2.87 | -0.20 |
+| Rule-based | -1.08 | 64.0% | 14.2% | 9.8% | 84.0% | 98.3 | 2.88 | -2.30 |
+| IQL | 1.19 | 79.6% | 18.6% | 2.4% | 99.4% | 101.0 | 2.17 | 2.53 |
+| CTDE actor-critic | 1.71 | 80.4% | 19.2% | 0.4% | 100.0% | 100.7 | 2.04 | 3.63 |
+| Rencana optimal satu putaran | 0.47 | 86.2% | 11.8% | 0.6% | 98.2% | 100.1 | 1.71 | 1.00 |

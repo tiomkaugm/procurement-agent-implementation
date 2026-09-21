@@ -9,9 +9,9 @@
   "eps_end": 0.05,
   "decay_share": 0.7,
   "states": {
-    "IRE": 425,
-    "VMI": 165,
-    "DA": 132,
+    "IRE": 420,
+    "VMI": 125,
+    "DA": 105,
     "SLM": 64
   }
 }

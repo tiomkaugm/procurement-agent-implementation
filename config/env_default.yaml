@@ -6,11 +6,11 @@ max_steps: 300               # safety net: episode is truncated after this many 
 
 randomization:
   quantity: [600, 1400]
-  urgent_share: [0.5, 0.9]
-  deadline_days: [5, 14]
+  urgent_share: [0.5, 0.8]   # ASSUMPTION: covers the fixture (0.7); retuned after score became a hard filter
+  deadline_days: [6, 14]     # ASSUMPTION: covers the fixture (10); below 6 the only score-eligible vendors are too slow
   vendor_jitter: 0.10        # +-10% on price, transport, risk, capacity, lead time
   relation: [0.4, 0.9]
-  budget_per_unit: [95000, 125000]       # ASSUMPTION: covers the fixture (100.000 per unit)
+  budget_per_unit: [100000, 125000]      # ASSUMPTION: lower edge is the fixture (100.000 per unit); retuned after the capacity-check fix
   initial_cash: [125000000, 230000000]   # ASSUMPTION: covers the fixture (150 jt)
   other_needs_month1: [0, 80000000]      # ASSUMPTION: covers the fixture (70 jt)
   inflow_months_2_to_4: [0, 80000000]    # ASSUMPTION: covers the fixture (0)
