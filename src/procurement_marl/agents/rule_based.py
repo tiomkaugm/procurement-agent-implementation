@@ -1,15 +1,20 @@
-"""Rule-based policy that imitates the report (Bab 6).
+"""Fixed baseline using the choices illustrated in Bab 6.
 
 IRE forwards in round 1 and asks for clarification after a conflict. VMI picks the eligible
 vendor with the lowest estimated total cost (last agreed price, else list price), and for a later batch prefers a different
 vendor as backup (risk note 6.3.1). DA always takes the initial offer. SLM always pays fast.
 It reads the environment directly because it is a hand-written baseline, not a learner.
+The six-stage report demonstration uses ReportReplayEnv; the general environment
+stops this baseline when its plan and relevant state repeat without progress.
 """
 
 from ..env import VENDORS
 
 
 class RuleBasedPolicy:
+    # Deterministic baseline: repeating the full plan/state cannot resolve a conflict.
+    stop_on_repeat = True
+
     def act(self, env, agent: str) -> int:
         mask = env.observe(agent)["action_mask"]
         if agent == "IRE":

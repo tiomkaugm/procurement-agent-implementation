@@ -24,20 +24,22 @@ def make_env(override: float | None = None) -> ProcurementEnv:
 def run_episode(env: ProcurementEnv, policy, seed: int | None = None, options: dict | None = None,
                 stop_at_first_check: bool = False) -> dict:
     """Play one episode. `policy.act(env, agent)` returns an action index."""
+    options = dict(options or {})
+    options.setdefault("stop_on_repeat", getattr(policy, "stop_on_repeat", False))
+    if stop_at_first_check:
+        options["stop_after_round"] = 1
     env.reset(seed=seed, options=options)
     returns = dict.fromkeys(env.possible_agents, 0.0)
     for agent in env.agent_iter():
         _, reward, terminated, truncated, _ = env.last()
         returns[agent] += reward
         env.step(None if terminated or truncated else policy.act(env, agent))
-        if stop_at_first_check and any(e.get("event") == "cek_batasan" for e in env.log):
-            for a, pending in env._cumulative_rewards.items():   # rewards not yet handed out
-                returns[a] += pending
-            break
     team = sum(env.weights[a] * r for a, r in returns.items())
     last = next((e for e in reversed(env.log) if e.get("event") == "cek_batasan"), None)
     return {"returns": returns, "team_return": team, "log": env.log, "steps": env.steps,
             "truncated": env.was_truncated,
+            "stop_reason": env.stop_reason,
+            "coordination_steps": max((e.get("coordination_step", 0) for e in env.log), default=0),
             "consensus": bool(last and last["consensus"]), "rounds": last["round"] if last else env.round,
             "violations": last["violations"] if last else [], "total": last["total"] if last else 0}
 
@@ -52,10 +54,10 @@ def evaluate_policy(policy, n: int = 500, override: float | None = None, seed_of
         r = run_episode(env, policy, seed=s, options={"scenario": sample_scenario(s)})
         rows.append(r)
         for e in r["log"]:
-            if e["agent"] == "DA":
+            if e["agent"] == "DA" and e.get("event") != "term_response":
                 da_turns += 1
                 counter += e["action"] == "penawaran_balik"
-            elif e["agent"] == "SLM":
+            elif e["agent"] == "SLM" and e.get("event") == "payment_plan":
                 slm_turns += 1
                 termin += e["action"] == "revisi_termin"
     return summarize(rows) | {"counter_offer_rate": counter / max(da_turns, 1),
@@ -87,25 +89,25 @@ def single_round_plan_row(n: int = 500, cache: Path | None = None) -> dict[str, 
 
     if cache and cache.exists():
         saved = json.loads(cache.read_text())
-        if saved["n"] == n:
+        if saved["n"] == n and saved.get("evaluation_version") == 2:
             return saved["row"]
     env = make_env()
     rows, values = [], []
     for s in range(n):
         sc = sample_scenario(s)
         value, plan = best_single_round_plan(sc, env)
-        r = run_episode(env, PlanPolicy(plan), seed=s, options={"scenario": sc})
+        r = run_episode(env, PlanPolicy(plan), seed=s, options={"scenario": sc}, stop_at_first_check=True)
         rows.append(r)
         values.append(value)
     row = summarize(rows) | {"team_return": sum(values) / n, "counter_offer_rate": 0.0, "term_revision_rate": 0.0}
     if cache:
-        cache.write_text(json.dumps({"n": n, "row": row}))
+        cache.write_text(json.dumps({"n": n, "row": row, "evaluation_version": 2}))
     return row
 
 
 COLUMNS = [("team_return", "Return tim"), ("consensus", "Konsensus"), ("budget_violation", "Pelanggaran anggaran"),
            ("cash_violation", "Pelanggaran kas"), ("urgent_met", "Unit mendesak terpenuhi"),
-           ("avg_cost", "Biaya rata-rata (juta Rp)"), ("rounds", "Rata-rata putaran"), ("ratio", "Rasio thd rencana optimal 1 putaran")]
+           ("avg_cost", "Biaya rata-rata (juta Rp)"), ("rounds", "Rata-rata siklus simulasi"), ("ratio", "Rasio thd rencana optimal 1 putaran")]
 
 
 def comparison_table(results: dict[str, dict[str, float]], plan_name: str) -> tuple[list[str], list[list[str]]]:
@@ -135,10 +137,11 @@ def main(n: int = 500, runs: Path | None = None) -> None:
     results[plan_name] = single_round_plan_row(n, runs / "single_round_plan.json")
     header, body = comparison_table(results, plan_name)
     with open(runs / "comparison.csv", "w", newline="") as f:
-        csv.writer(f).writerows([header] + body)
+        csv.writer(f, lineterminator="\n").writerows([header] + body)
     md = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)] + ["| " + " | ".join(r) + " |" for r in body]
     text = "\n".join(md)
     (runs / "comparison.md").write_text(text + "\n")
+    (runs / "comparison.meta.json").write_text(json.dumps({"evaluation_version": 2, "n": n}))
     print(f"Perbandingan kebijakan, rata-rata {n} skenario acak (seed 0-{n - 1}):\n")
     print(text)
     print("\nCatatan: return tim baris rencana optimal = nilai harapan satu putaran; kolom lain dari menjalankan rencana itu. "

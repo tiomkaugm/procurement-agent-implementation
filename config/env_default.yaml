@@ -1,6 +1,6 @@
 # Parameters for the random training scenarios and the environment.
 # Everything here is our own assumption (not from the report); see DECISIONS.md.
-max_rounds: 6                # from the report: 6 rounds, then no consensus
+max_rounds: 6                # simulator safety limit; NOT the six coordination stages of Bab 6.5
 gamma: 0.99
 max_steps: 300               # safety net: episode is truncated after this many steps
 

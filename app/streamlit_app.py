@@ -1,6 +1,7 @@
 """Dashboard MARL Procurement. Run: streamlit run app/streamlit_app.py"""
 
 import sys
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,32 +14,34 @@ import streamlit as st
 from procurement_marl.agents.random_agent import RandomPolicy
 from procurement_marl.agents.rule_based import RuleBasedPolicy
 from procurement_marl.costs import cash_balances
-from procurement_marl.env import AGENTS, IRE_LABELS, ProcurementEnv
+from procurement_marl.env import AGENTS, ProcurementEnv
 from procurement_marl.evaluate import run_episode
 from procurement_marl.scenario import cash_diagnosis, composite_scores, eligible_vendors, load_scenario, sample_scenario
+from procurement_marl.presentation import STOP_REASON, VIOLATION, describe, log_rows, round_payments, rp
+from procurement_marl.report import COORDINATION_STAGES, run_report_episode
 
 RUNS = ROOT / "runs"
 BLUE, ORANGE = "#2a78d6", "#eb6834"          # categorical slots 1 and 2
 PLAN = "Rencana optimal satu putaran"
 AGENT_NAMES = {"IRE": "IRE (Intake & Routing)", "VMI": "VMI (Vendor Matrix)",
                "DA": "DA (Deal Architect)", "SLM": "SLM (Settlement & Liquidity)"}
-VIOLATION = {"kas_negatif": "kas negatif", "anggaran": "anggaran terlampaui",
-             "unit_mendesak": "unit mendesak terlambat", "kas_minimum": "kas di bawah minimum",
-             "kapasitas": "kapasitas vendor kurang",
-             "tanpa_pemasok_layak": "tidak ada pemasok yang memenuhi syarat"}
-REASON = {"kapasitas": "kapasitas kurang", "skor": "gugur skor komposit",
-          "lead_time": "lead time melewati tenggat", "dikecualikan": "dikecualikan"}
+POLICY_HELP = {
+    "Rule-based (meniru laporan)": "Fixture: reproduksi enam tahap koordinasi Bab 6.5. Pada skenario acak: "
+                                  "aturan tetap untuk pembanding, berhenti jika rencana dan keadaan berulang.",
+    "Random": "Memilih tindakan valid secara acak. Berguna untuk menguji jalur proses dan sebagai pembanding dasar.",
+    "IQL": "Setiap agen memakai tabel tindakan hasil latihan. Episode ini menjalankan model, tidak melatih ulang.",
+    "CTDE actor-critic": "Actor memilih berdasarkan observasi lokal; critic bersama hanya dipakai saat latihan. "
+                         "Episode ini menjalankan model yang sudah dilatih.",
+    PLAN: "Mencari nilai harapan reward tim tertinggi dalam pilihan rencana satu putaran. "
+          "Tidak menjamin biaya terendah atau konsensus; berhenti setelah pemeriksaan pertama.",
+}
 
 st.set_page_config(page_title="MARL Procurement", layout="wide")
 
 
-def rp(x: int) -> str:
-    return ("-" if x < 0 else "") + "Rp" + f"{abs(x):,}".replace(",", ".")
-
-
 # ------------------------------------------------------------------ policies
-@st.cache_resource
 def load_policy(name: str, seed: int):
+    # A fresh policy per episode prevents cached RNG/Q-table state leaking between runs.
     if name == "Random":
         return RandomPolicy(seed)
     if name == "Rule-based (meniru laporan)":
@@ -63,6 +66,10 @@ def available_policies() -> list[str]:
 
 def play_episode(policy_name: str, scenario_kind: str, seed: int) -> dict:
     scenario = load_scenario() if scenario_kind == "Fixture laporan" else sample_scenario(seed)
+    report_replay = policy_name == "Rule-based (meniru laporan)" and scenario_kind == "Fixture laporan"
+    if report_replay:
+        return {"scenario": scenario, "result": run_report_episode(seed), "policy": policy_name,
+                "report_replay": True}
     if policy_name == PLAN:
         from procurement_marl.oracle import PlanPolicy, best_single_round_plan
         _, plan = best_single_round_plan(scenario)
@@ -73,50 +80,7 @@ def play_episode(policy_name: str, scenario_kind: str, seed: int) -> dict:
     # Rencana optimal dinilai satu putaran: jika konflik, episode berhenti di situ (sama seperti oracle).
     result = run_episode(env, policy, seed=seed, options={"scenario": scenario},
                          stop_at_first_check=(policy_name == PLAN))
-    return {"scenario": scenario, "result": result, "policy": policy_name}
-
-
-# ----------------------------------------------------------------- describing
-def describe(e: dict) -> tuple[str, str]:
-    """(decision, detail) in Indonesian for one log entry."""
-    a = e["agent"]
-    if a == "IRE":
-        return IRE_LABELS[e["action"]], "; ".join(f"{b['qty']} unit bulan {b['month']}" for b in e["batches"])
-    if a == "VMI":
-        masked = ", ".join(f"{v}: {REASON[r]}" for v, r in e["masked"].items()) or "tidak ada yang di-mask"
-        notes = ""
-        if e.get("score_fallback"):
-            notes += " Semua vendor di bawah ambang skor; vendor terbaik dipertahankan sesuai aturan."
-        if e.get("no_vendor_fits"):
-            notes += f" Tidak ada vendor yang memenuhi syarat; VMI dipaksa memakai {e['vendor']} dan putaran akan konflik."
-        return f"pilih {e['vendor']}", f"batch {e['batch'] + 1}. Di-mask: {masked}. Estimasi {rp(e['estimate'])}.{notes}"
-    if a == "DA":
-        note = ""
-        if e.get("accepted") is not None:
-            note = " (diterima)" if e["accepted"] else " (ditolak)"
-        if e.get("withdrew"):
-            note += ", vendor mundur"
-        price = f"harga {rp(e['price'])}/unit" if e["price"] else "kembali ke VMI"
-        return e["action"] + note, f"batch {e['batch'] + 1}, {e['vendor']}, {price}"
-    if a == "SLM":
-        note = ""
-        if e["term_accepted"] is not None:
-            note = " (termin diterima)" if e["term_accepted"] else " (termin ditolak, jatuh tempo)"
-        return e["action"] + note, (f"batch {e['batch'] + 1}: barang {rp(e['goods_value'])}, diskon {rp(e['discount'])}, "
-                                    f"transport+risiko {rp(e['logistics'])}, total {rp(e['total'])}")
-    names = ", ".join(VIOLATION[v] for v in e["violations"])
-    return ("KONSENSUS" if e["consensus"] else "konflik",
-            f"total {rp(e['total'])}, sisa anggaran {rp(e['budget_left'])}. " + (f"Pelanggaran: {names}." if names else ""))
-
-
-def round_payments(log: list[dict], step: int) -> dict[int, int]:
-    """Payments of the batches settled so far in the round of log[step - 1]."""
-    rnd, payments = log[step - 1]["round"], {}
-    for e in log[:step]:
-        if e["round"] == rnd and e["agent"] == "SLM":
-            for m, amount in e["schedule"].items():
-                payments[m] = payments.get(m, 0) + amount
-    return payments
+    return {"scenario": scenario, "result": result, "policy": policy_name, "report_replay": False}
 
 
 def cash_chart(sc, cash: list[int]) -> go.Figure:
@@ -164,12 +128,12 @@ def episode_tab() -> None:
         "Penawaran awal": rp(v.initial_offer), "Harga lantai": rp(v.floor_price),
         "Diskon bayar cepat": f"{v.discount_pct}%", "Skor komposit": round(scores[v.name], 2),
         "Lolos skor": "ya" if v.name in eligible else "gugur"} for v in sc.vendors]),
-        hide_index=True, use_container_width=True)
+        hide_index=True, width="stretch")
 
     diag = cash_diagnosis(sc)
     if diag["infeasible"]:
         st.warning(
-            f"Diagnosis kas: skenario ini tidak bisa mencapai konsensus, berapa pun rencananya. Kas yang tersedia selama "
+            f"Diagnosis kas dalam batas harga dan horizon simulator: kas yang tersedia selama "
             f"horizon {rp(diag['available'])} (kas awal + arus masuk - kebutuhan lain), sedangkan biaya terendah "
             f"{rp(diag['lower_bound'])} (seluruh permintaan ke vendor {diag['vendor']} di harga lantai dengan diskon bayar cepat). "
             f"Kekurangan minimal {rp(diag['shortfall'])}. Perlu tambahan dana, arus kas masuk, atau permintaan yang lebih kecil.")
@@ -177,10 +141,24 @@ def episode_tab() -> None:
         st.caption("Diagnosis kas: batas bawah biaya masih tercakup kas horizon. Ini belum membuktikan skenario layak; "
                    "kegagalan di sini berarti solusi belum ditemukan, bukan pasti tidak mungkin.")
 
-    outcome = "KONSENSUS" if result["consensus"] else "TANPA KONSENSUS"
-    st.subheader(f"Episode: {outcome} setelah {result['rounds']} putaran ({ep['policy']})")
-    st.caption(f"Return tim {result['team_return']:.2f}. "
-               "Reward diberikan di setiap putaran, jadi episode yang gagal tetap mengumpulkan reward positif per putaran.")
+    report_replay = ep.get("report_replay", False)
+    outcome = "KONSENSUS RENCANA" if result["consensus"] else "TANPA KONSENSUS"
+    if result["stop_reason"] == "report_revision_required":
+        outcome = "USULAN PERLU REVISI"
+    elif result["truncated"]:
+        outcome = "SIMULASI DIHENTIKAN"
+    duration = (f"{result['coordination_steps']} tahap koordinasi" if report_replay
+                else f"{result['rounds']} siklus simulasi")
+    st.subheader(f"Episode: {outcome} setelah {duration} ({ep['policy']})")
+    st.info(STOP_REASON[result["stop_reason"]])
+    st.caption(f"Return tim tanpa diskonto: {result['team_return']:.2f}. "
+               "Reward merupakan desain simulator dan diberikan per siklus; bukan angka ilustrasi tabel 6.6.")
+    if report_replay:
+        with st.expander("Alur enam tahap sesuai Bab 6.5"):
+            for number, label in COORDINATION_STAGES.items():
+                st.write(f"{'Persiapan' if number == 0 else str(number)}: {label}")
+            st.write("Evaluasi bersama: IRE meninjau kebutuhan, VMI alternatif vendor, DA harga/termin, "
+                     "dan SLM dampak kas. Skenario usulan perlu revisi sebelum persetujuan pengadaan.")
 
     if ep["policy"] == PLAN and not result["consensus"]:
         st.info("Rencana optimal satu putaran konflik di putaran 1 "
@@ -199,52 +177,52 @@ def episode_tab() -> None:
     step = st.slider("Langkah", 1, len(log), key="step")
     entry = log[step - 1]
 
-    st.subheader(f"Kartu agen (setelah langkah {step}, putaran {entry['round']})")
+    position = entry.get("coordination_label", f"Siklus simulasi {entry['round']}")
+    st.subheader(f"Langkah {step}: {position}")
     cols = st.columns(4)
     for col, agent in zip(cols, AGENTS):
-        past = [e for e in log[:step] if e["agent"] == agent and e["round"] == entry["round"]]
+        past = [e for e in log[:step] if e.get("reviewer", e["agent"]) in (agent, "BERSAMA")
+                and e["round"] == entry["round"]]
         with col.container(border=True):
             st.markdown(f"**{AGENT_NAMES[agent]}**")
             if not past:
-                st.caption("belum bertindak di putaran ini")
+                st.caption("belum bertindak pada rencana ini")
             else:
                 decision, detail = describe(past[-1])
                 st.markdown(f"Keputusan: `{decision}`")
                 st.caption(detail)
-            if entry["agent"] == agent:
+            if entry.get("reviewer", entry["agent"]) in (agent, "BERSAMA"):
                 st.markdown("🟢 giliran ini")
 
     left, right = st.columns(2)
     with left:
         st.subheader("Kas per bulan")
-        if entry["agent"] == "ENV":
+        if "cash" in entry:
             cash = entry["cash"]
         else:
             cash = cash_balances(sc.initial_cash, list(sc.inflows), list(sc.other_needs), round_payments(log, step))
-        st.plotly_chart(cash_chart(sc, cash), use_container_width=True)
+        st.plotly_chart(cash_chart(sc, cash), width="stretch")
         st.caption("Kas akhir bulan = kas sebelumnya + arus masuk - pembayaran - kebutuhan lain, "
-                   "berdasarkan batch yang sudah dibayar sampai langkah ini.")
+                   "berdasarkan jadwal yang diusulkan sampai langkah ini. Belum ada pembayaran aktual.")
     with right:
-        st.subheader("Rincian biaya putaran ini")
-        slm = [e for e in log[:step] if e["round"] == entry["round"] and e["agent"] == "SLM"]
+        st.subheader("Rincian biaya rencana ini")
+        slm = [e for e in log[:step] if e["round"] == entry["round"] and e.get("event") == "payment_plan"]
         if slm:
             df = pd.DataFrame([{"Batch": e["batch"] + 1, "Vendor": e["vendor"], "Harga/unit": rp(e["price"]),
                                 "Barang": rp(e["goods_value"]), "Diskon": rp(e["discount"]),
                                 "Transport+risiko": rp(e["logistics"]), "Total": rp(e["total"]),
                                 "Cara bayar": e["mode"]} for e in slm])
-            st.dataframe(df, hide_index=True, use_container_width=True)
+            st.dataframe(df, hide_index=True, width="stretch")
             total = sum(e["total"] for e in slm)
             st.metric("Total pengadaan", rp(total), delta=f"sisa anggaran {rp(sc.budget - total)}",
                       delta_color="normal" if total <= sc.budget else "inverse")
         else:
-            st.caption("Belum ada batch yang dibayar di putaran ini.")
+            st.caption("Belum ada rekomendasi jadwal pembayaran untuk rencana ini.")
 
     st.subheader("Log negosiasi")
-    rows = []
-    for i, e in enumerate(log[:step], start=1):
-        decision, detail = describe(e)
-        rows.append({"Langkah": i, "Putaran": e["round"], "Agen": e["agent"], "Keputusan": decision, "Rincian": detail})
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(log_rows(log[:step])), hide_index=True, width="stretch")
+    st.download_button("Unduh log lengkap (CSV)", pd.DataFrame(log_rows(log)).to_csv(index=False).encode("utf-8-sig"),
+                       file_name="log_negosiasi.csv", mime="text/csv")
 
 
 def training_tab() -> None:
@@ -253,8 +231,8 @@ def training_tab() -> None:
     if not curves:
         st.info("Belum ada kurva training. Jalankan `python scripts/train.py --algo iql` dan `--algo ctde`.")
         return
-    st.plotly_chart(curve_chart("mean_team_return", "Return tim rata-rata per blok", curves), use_container_width=True)
-    st.plotly_chart(curve_chart("consensus_rate", "Tingkat konsensus per blok", curves), use_container_width=True)
+    st.plotly_chart(curve_chart("mean_team_return", "Return tim rata-rata per blok", curves), width="stretch")
+    st.plotly_chart(curve_chart("consensus_rate", "Tingkat konsensus per blok", curves), width="stretch")
     st.caption("Kurva adalah rata-rata per blok episode saat berlatih (dengan eksplorasi), bukan evaluasi greedy. "
                "Hasil evaluasi akhir ada di tab Perbandingan.")
 
@@ -264,32 +242,52 @@ def comparison_tab() -> None:
     if not path.exists():
         st.info("Belum ada tabel. Jalankan `python scripts/evaluate.py`.")
         return
-    st.subheader("Perbandingan kebijakan (500 skenario acak, seed 0-499)")
-    st.dataframe(pd.read_csv(path), hide_index=True, use_container_width=True)
+    meta_path = RUNS / "comparison.meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    if meta.get("evaluation_version") != 2:
+        st.info("Tabel tersimpan berasal dari evaluasi sebelum perbaikan alur. "
+                "Jalankan ulang evaluasi untuk memperbarui hasil penghentian Rule-based dan rencana satu putaran.")
+    st.subheader("Perbandingan kebijakan — hasil evaluasi tersimpan")
+    st.dataframe(pd.read_csv(path), hide_index=True, width="stretch")
     st.warning("Rasio terhadap rencana optimal satu putaran boleh > 1 dan tidak berarti kebijakan lebih baik. "
                "Rencana optimal menilai kegagalan berhenti di satu putaran, sedangkan kebijakan multi-putaran "
-               "mengumpulkan reward per putaran yang menutup sebagian penalti tim. Lihat tingkat konsensus: "
-               "rencana optimal satu putaran 84,6% dibanding IQL 81,0% dan CTDE 78,0%.")
+               "mengumpulkan reward per siklus. Bandingkan juga konsensus, pelanggaran, biaya, "
+               "dan jumlah siklus pada tabel; return di sini tanpa diskonto.")
     sens = RUNS / "sensitivity" / "summary.csv"
     if sens.exists():
         st.subheader("Sensitivitas terhadap peluang penerimaan vendor")
-        st.dataframe(pd.read_csv(sens), hide_index=True, use_container_width=True)
+        st.dataframe(pd.read_csv(sens), hide_index=True, width="stretch")
         st.caption("p_accept = p_termin dibuat tetap. Kolom terakhir: seberapa sering DA memilih penawaran_balik "
-                   "dan SLM memilih revisi_termin.")
+                   "dan SLM memilih revisi_termin. Ini hasil eksperimen tersimpan; "
+                   "tidak dihitung ulang ketika menjalankan episode atau evaluasi utama.")
 
 
 # ----------------------------------------------------------------------- main
 st.title("MARL Procurement: pengadaan barang dengan empat agen")
-st.caption("Kelompok 2, Agen Cerdas Enterprise. Empat agen (IRE, VMI, DA, SLM) bergiliran memutuskan pengadaan.")
+st.caption("Simulasi rekomendasi pengadaan oleh IRE, VMI, DA, dan SLM. "
+           "Pembayaran aktual memerlukan verifikasi tagihan, penerimaan barang, dan otorisasi di ERP.")
 
 with st.sidebar:
     st.header("Pengaturan episode")
     policy_name = st.selectbox("Kebijakan", available_policies())
+    st.caption(POLICY_HELP[policy_name])
     scenario_kind = st.radio("Skenario", ["Fixture laporan", "Acak (pilih seed)"])
-    seed = st.number_input("Seed", min_value=0, value=0, step=1)
+    seed = st.number_input("Seed", min_value=0, value=0, step=1,
+                           help="Angka awal pengacakan. Pengaturan sama menghasilkan episode yang sama. "
+                                "Pada skenario acak, seed juga menentukan data skenario; tidak melatih ulang model.")
     if st.button("Jalankan episode", type="primary"):
         with st.spinner("Menjalankan episode..."):
             st.session_state["episode"] = play_episode(policy_name, scenario_kind, int(seed))
+
+with st.expander("Cakupan simulasi dan asumsi"):
+    st.write("VMI memakai empat komponen skor berbobot tetap. Nilai reputasi, normalisasi skor, ambang, "
+             "harga lantai, peluang penerimaan vendor, dan termin 50:50 adalah asumsi simulator. "
+             "Batas kas Rp60 juta pada fixture hanya peringatan.")
+    st.write("IRE memakai jumlah kebutuhan mendesak yang sudah tersedia, belum melakukan klarifikasi dokumen. "
+             "71 fitur vendor, klasifikasi ML historis, NLP kontrak, portal pemasok, dan ERP belum diimplementasikan.")
+    st.write("CTDE menggunakan actor-critic dengan kumpulan episode baru saat training (on-policy). "
+             "Belum menggunakan shared replay buffer. Revisi termin diproses sebagai usulan SLM, "
+             "negosiasi DA dengan respons vendor tersimulasi, lalu rekomendasi jadwal oleh SLM.")
 
 tab1, tab2, tab3 = st.tabs(["Episode", "Kurva training", "Perbandingan"])
 with tab1:

@@ -3,7 +3,9 @@
 One round = IRE picks how to split the request, then for every batch VMI picks a vendor,
 DA negotiates the price and SLM picks the payment mode. After the last batch the
 environment checks budget, cash and urgent units. If something is violated a new round
-starts (max 6). Every step is written to `env.log` (list of dicts) for tests and dashboard.
+starts, subject to a configurable simulation limit. A simulation cycle is not one of
+the six coordination stages in the report. Payment entries are proposed schedules,
+not executed ERP payments. Every step is written to `env.log`.
 """
 
 from __future__ import annotations
@@ -89,6 +91,10 @@ class ProcurementEnv(AECEnv):
         self.round = 1
         self.steps = 0
         self.was_truncated = False
+        self.stop_reason: str | None = None
+        self.stop_after_round = options.get("stop_after_round")
+        self.stop_on_repeat = options.get("stop_on_repeat", False)
+        self._previous_round_signature = None
         self.agreed_price: dict[str, int] = {}     # last price agreed with each vendor in this episode
         self.log: list[dict] = []
         self.conflict = dict.fromkeys(CONFLICT_KEYS, False)
@@ -191,6 +197,8 @@ class ProcurementEnv(AECEnv):
             self.truncations = dict.fromkeys(self.agents, True)
             self.was_truncated = True
             self.stage = "END"
+            self.stop_reason = "step_limit"
+            self._log(agent="ENV", event="episode_stopped", stop_reason=self.stop_reason)
         self._accumulate_rewards()
 
     def _log(self, **entry) -> None:
@@ -233,6 +241,9 @@ class ProcurementEnv(AECEnv):
         self._log(agent="VMI", batch=self.batch_idx, action=f"vendor_{v.name}", vendor=v.name,
                   mask=mask, masked=reasons, estimates=est, estimate=est[v.name],
                   no_vendor_fits=b["no_vendor"], score_fallback=score_fallback(self.scenario))
+        self._after_vendor_selection()
+
+    def _after_vendor_selection(self) -> None:
         self.stage, self.agent_selection = "DA", "DA"
 
     def _step_da(self, a: int) -> None:
@@ -269,17 +280,36 @@ class ProcurementEnv(AECEnv):
                 self._begin_batch()
                 return
         self.agreed_price[v.name] = b["price"]
+        self._after_price_agreement()
+
+    def _after_price_agreement(self) -> None:
         self.stage, self.agent_selection = "SLM", "SLM"
+
+    def _negotiate_terms(self, vendor) -> tuple[str, bool]:
+        """DA handles SLM's request before SLM builds a payment recommendation.
+
+        These delegated protocol events remain inside one AEC transition: the
+        existing three policy actions and checkpoint observations stay compatible.
+        Acceptance probabilities and the 50/50 proposal are simulator assumptions.
+        """
+        accepted = self._draw(self._p_termin(vendor.name))
+        mode = PAY_SPLIT if accepted else PAY_DUE
+        if not accepted:
+            self.relation[vendor.name] = round(
+                max(0.0, self.relation[vendor.name] - self.stoch["termin_relation_drop"]), 4)
+        self._log(agent="DA", event="term_response", action="negosiasi_termin",
+                  batch=self.batch_idx, vendor=vendor.name, accepted=accepted,
+                  mode=mode, relation=self.relation[vendor.name])
+        return mode, accepted
 
     def _step_slm(self, a: int) -> None:
         b = self.batch
         v = self.scenario.vendor(b["vendor"])
         mode, accepted = SLM_ACTIONS[a], None
         if mode == PAY_SPLIT:
-            accepted = self._draw(self._p_termin(v.name))
-            if not accepted:
-                mode = PAY_DUE
-                self.relation[v.name] = round(max(0.0, self.relation[v.name] - self.stoch["termin_relation_drop"]), 4)
+            self._log(agent="SLM", event="term_request", action=PAY_SPLIT,
+                      batch=self.batch_idx, vendor=v.name)
+            mode, accepted = self._negotiate_terms(v)
         pct = v.discount_pct if mode == PAY_FAST else 0
         value = goods_value(b["qty"], b["price"])
         disc = discount_amount(value, pct)
@@ -287,10 +317,15 @@ class ProcurementEnv(AECEnv):
         b["schedule"] = payment_schedule(mode, b["month"], b["qty"], b["price"], v.transport, v.risk, pct)
         for m, amount in b["schedule"].items():
             self.committed[m] = self.committed.get(m, 0) + amount
-        self._log(agent="SLM", batch=self.batch_idx, action=SLM_ACTIONS[a], mode=mode, term_accepted=accepted,
+        self._log(agent="SLM", event="payment_plan", batch=self.batch_idx,
+                  action=SLM_ACTIONS[a], mode=mode, term_accepted=accepted,
                   vendor=v.name, price=b["price"], goods_value=value, discount=disc,
                   goods_after_discount=value - disc, logistics=b["qty"] * (v.transport + v.risk),
-                  total=sum(b["schedule"].values()), schedule=dict(b["schedule"]))
+                  total=sum(b["schedule"].values()), schedule=dict(b["schedule"]),
+                  cash=self._projected_cash())
+        self._after_payment_plan()
+
+    def _after_payment_plan(self) -> None:
         self.batch_idx += 1
         if self.batch_idx < len(self.batches):
             self._begin_batch()
@@ -298,6 +333,17 @@ class ProcurementEnv(AECEnv):
             self._end_round()
 
     # ------------------------------------------------------------ round check
+    def _round_stop_reason(self, consensus: bool, signature: tuple) -> str | None:
+        if consensus:
+            return "consensus"
+        if self.stop_after_round is not None and self.round >= self.stop_after_round:
+            return "single_round_limit"
+        if self.stop_on_repeat and signature == self._previous_round_signature:
+            return "no_progress"
+        if self.round >= self.max_rounds:
+            return "cycle_limit"
+        return None
+
     def _end_round(self) -> None:
         sc = self.scenario
         cash = self._projected_cash()
@@ -323,7 +369,15 @@ class ProcurementEnv(AECEnv):
             violations.append("kas_minimum")
         warnings = ["kas_di_bawah_minimum"] if below_min and not sc.enforce_min_cash else []
         consensus = not violations
-        done = consensus or self.round >= self.max_rounds
+        signature = (
+            tuple((b["qty"], b["month"], b["vendor"], b["price"], b["mode"],
+                   b["discount"], b["no_vendor"], b["da_failed"]) for b in self.batches),
+            tuple(sorted(self.committed.items())), tuple(sorted(self.relation.items())),
+            tuple(sorted(self.agreed_price.items())), tuple(violations),
+        )
+        self.stop_reason = self._round_stop_reason(consensus, signature)
+        self._previous_round_signature = signature
+        done = self.stop_reason is not None
 
         rc = self.reward_cfg
         n = len(self.batches)
@@ -346,7 +400,7 @@ class ProcurementEnv(AECEnv):
 
         self._log(agent="ENV", event="cek_batasan", cash=cash, total=total, budget_left=sc.budget - total,
                   urgent_met=urgent_met, violations=violations, warnings=warnings, consensus=consensus,
-                  done=done, rewards=dict(rew))
+                  done=done, stop_reason=self.stop_reason, rewards=dict(rew))
         self.violations = violations
         if done:
             self.terminations = dict.fromkeys(self.agents, True)

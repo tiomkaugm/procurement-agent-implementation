@@ -15,7 +15,6 @@ from itertools import product
 
 from .env import ProcurementEnv
 from .evaluate import run_episode
-from .rewards import team_reward
 from .scenario import Scenario, sample_scenario
 
 
@@ -69,10 +68,6 @@ def expected_return(env: ProcurementEnv, scenario: Scenario, plan: tuple) -> flo
         probs = list(env.draw_probs)
         if len(probs) <= len(forced):     # no new chance events were needed
             value = result["team_return"]
-            if not result["consensus"]:   # stop here with the team penalty
-                rc = env.reward_cfg["team"]
-                penalty = team_reward(result["total"] > scenario.budget, False, rc["over_budget"], rc["no_consensus"])
-                value += penalty * sum(env.weights.values())
             return prob * value
         p = probs[len(forced)]
         return visit(forced + [True], prob * p) + visit(forced + [False], prob * (1 - p))

@@ -23,7 +23,7 @@ def test_app_loads_without_episode():
 def test_fixture_rule_based_ends_without_consensus():
     at = run_app("Rule-based (meniru laporan)")
     assert not at.exception
-    assert any("TANPA KONSENSUS setelah 6 putaran" in s.value for s in at.subheader)
+    assert any("USULAN PERLU REVISI setelah 6 tahap koordinasi" in s.value for s in at.subheader)
     assert at.slider[0].max > 6
 
 
@@ -39,3 +39,25 @@ def test_random_scenario_with_all_policies():
     for policy in ("Random", "IQL", "CTDE actor-critic", "Rencana optimal satu putaran"):
         at = run_app(policy, "Acak (pilih seed)", 3)
         assert not at.exception, policy
+
+
+def test_random_repeated_click_with_same_seed_reproduces_log():
+    at = run_app("Random", "Acak (pilih seed)", 3)
+    first = at.session_state["episode"]["result"]["log"]
+    at.sidebar.button[0].click().run()
+    assert not at.exception
+    assert at.session_state["episode"]["result"]["log"] == first
+    at.sidebar.number_input[0].set_value(4)
+    at.sidebar.button[0].click().run()
+    assert not at.exception
+    assert at.session_state["episode"]["result"]["log"] != first
+
+
+def test_report_final_step_and_export_have_six_stages():
+    at = run_app("Rule-based (meniru laporan)")
+    at.slider[0].set_value(at.slider[0].max).run()
+    assert not at.exception
+    log = next(table.value for table in at.dataframe if "Tahap koordinasi" in table.value.columns)
+    assert list(log["Tahap koordinasi"]) == [0, 0, 0, 0, 1, 2, 3, 3, 4, 4, 5, 5, 6]
+    assert log.iloc[-1]["Agen"] == "BERSAMA"
+    assert log.iloc[-1]["Keputusan"] == "USULAN PERLU REVISI"

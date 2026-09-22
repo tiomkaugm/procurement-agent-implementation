@@ -83,7 +83,7 @@ def test_counter_offer_always_accepted_and_term_accepted():
     env = env_with(1.0, 1.0)
     play(env, [0, 1, 1, 2])           # teruskan, vendor B, penawaran_balik, revisi_termin
     da = [e for e in env.log if e["agent"] == "DA"][0]
-    slm = [e for e in env.log if e["agent"] == "SLM"][0]
+    slm = next(e for e in env.log if e.get("event") == "payment_plan")
     assert da["accepted"] is True and da["price"] == 89_000     # floor price
     assert slm["term_accepted"] is True and slm["mode"] == "revisi_termin"
     assert slm["schedule"] == {1: 12_000_000, 2: 44_500_000, 3: 44_500_000}
@@ -93,7 +93,7 @@ def test_counter_offer_rejected_lowers_relation_and_termin_falls_back():
     env = env_with(0.0, 0.0)
     play(env, [0, 1, 1, 2])
     da = [e for e in env.log if e["agent"] == "DA"][0]
-    slm = [e for e in env.log if e["agent"] == "SLM"][0]
+    slm = next(e for e in env.log if e.get("event") == "payment_plan")
     assert da["accepted"] is False and da["price"] == 89_500     # back to initial offer
     assert da["relation"] == pytest.approx(0.4) and not da["withdrew"]
     assert slm["term_accepted"] is False and slm["mode"] == "bayar_jatuh_tempo"

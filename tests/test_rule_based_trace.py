@@ -5,11 +5,12 @@ import pytest
 from procurement_marl.agents.rule_based import RuleBasedPolicy
 from procurement_marl.env import ProcurementEnv
 from procurement_marl.evaluate import run_episode
+from procurement_marl.report import ReportReplayEnv
 
 
 @pytest.fixture(scope="module")
 def trace():
-    env = ProcurementEnv(scenario="report")
+    env = ReportReplayEnv()
     result = run_episode(env, RuleBasedPolicy(), seed=0)
     return result, env.log
 
@@ -76,16 +77,25 @@ def test_round2_check(trace):
     assert check["total"] == 100_397_000
     assert check["total"] - 100_000_000 == 397_000
     assert check["violations"] == ["kas_negatif", "anggaran"]
-    assert not check["done"]
+    assert check["done"] and check["stop_reason"] == "report_revision_required"
 
 
-def test_rounds_3_to_6_repeat_and_end_without_consensus(trace):
+def test_six_coordination_stages_end_with_revision_not_repeated_cycles(trace):
     result, log = trace
     checks = [e for e in log if e.get("event") == "cek_batasan"]
-    assert len(checks) == 6
-    for rnd in range(3, 7):
-        assert [e["action"] for e in log if e["round"] == rnd and e["agent"] != "ENV"] == \
-               [e["action"] for e in log if e["round"] == 2 and e["agent"] != "ENV"]
-        assert checks[rnd - 1]["violations"] == ["kas_negatif", "anggaran"]
+    assert len(checks) == 2
+    assert [e["coordination_step"] for e in log] == [0, 0, 0, 0, 1, 2, 3, 3, 4, 4, 5, 5, 6]
+    assert [e["agent"] for e in log if e["round"] == 2] == ["IRE", "VMI", "VMI", "DA", "DA", "SLM", "SLM", "ENV"]
     assert checks[-1]["done"] and not result["consensus"]
-    assert result["rounds"] == 6
+    assert result["rounds"] == 2 and result["coordination_steps"] == 6
+    assert result["stop_reason"] == "report_revision_required"
+    stage5 = [e for e in log if e["coordination_step"] == 5]
+    assert stage5[0]["cash"][0] == 10_203_000
+    assert stage5[-1]["cash"][:2] == [10_203_000, -20_397_000]
+
+
+def test_general_rule_based_stops_when_plan_and_state_repeat():
+    result = run_episode(ProcurementEnv("report"), RuleBasedPolicy(), seed=0)
+    assert result["rounds"] == 3
+    assert result["stop_reason"] == "no_progress"
+    assert not result["consensus"]
